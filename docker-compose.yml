@@ -1,0 +1,68 @@
+services:
+  # =========================================
+  # データベース(PostgreSQL)
+  # =========================================
+  db:
+    image: postgres:16-alpine
+    container_name: fxsignal_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # =========================================
+  # バックエンド(FastAPI)
+  # =========================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fxsignal_backend
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
+  # =========================================
+  # フロントエンド(Next.js)
+  # =========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: fxsignal_frontend
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # フロントエンド(ブラウザ側)からバックエンドAPIを呼ぶためのURL。
+      # NEXT_PUBLIC_ プレフィックスを付けると、Next.jsがブラウザ側のコードにも
+      # この環境変数を埋め込んでくれる(逆に言うと、秘密情報は絶対にここに置かない)。
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  postgres_data:
