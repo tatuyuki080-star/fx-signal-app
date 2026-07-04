@@ -65,10 +65,7 @@ app = FastAPI(
 # これがないと、ブラウザがセキュリティ上の理由でAPIへのアクセスをブロックする。
 app.add_middleware(
     CORSMiddleware,
-    # 開発中はローカルネットワーク内の様々な端末(PC, スマホ)からの
-    # アクセスを許可するため、オリジンを正規表現で広めに許可する。
-    # 本番運用前には、実際のドメインに絞り込む必要がある。
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+):3000",
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|\d+\.\d+\.\d+\.\d+):3000",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
