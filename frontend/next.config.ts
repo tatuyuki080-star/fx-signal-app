@@ -13,7 +13,7 @@ const nextConfig: NextConfig = {
    *       ネットワークが変わる(別のWi-Fiに繋ぎ直す等)と、
    *       IPアドレスも変わるため、その都度ここを更新する必要がある。
    */
-  allowedDevOrigins: ["192.168.0.73"],
+  allowedDevOrigins: ["49.212.186.28"],
 };
 
 export default nextConfig;
