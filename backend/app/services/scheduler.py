@@ -47,7 +47,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# WEAK以上(50点以上)のときだけ通知する
+# WEAK以上(60点以上)のときだけ通知する
 NOTIFIABLE_LABELS = {"WEAK", "NORMAL", "STRONG"}
 
 # Twelve Dataの無料プラン(1分あたり8リクエスト)を超えないよう、
