@@ -102,6 +102,8 @@ def get_latest_signal(symbol: str, db: Session = Depends(get_db)):
         "score": result.score,
         "strength_label": result.strength_label,
         "entry_price": result.entry_price,
+        "stop_loss": result.stop_loss,
+        "take_profit": result.take_profit,
         "atr_value": result.atr_value,
         "reasons": result.reasons,
     }

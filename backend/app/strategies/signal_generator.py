@@ -53,15 +53,15 @@ THRESHOLD_WEAK = 60
 class SignalResult:
     """
     シグナル判定の結果を表すデータ構造。
-    api/ や services/discord_notifier.py(今後実装)から参照しやすいよう、
-    必要な情報をすべて1つにまとめている。
     """
-    signal_type: str  # "BUY" / "SELL" / "NO_TRADE"
+    signal_type: str
     score: float
-    strength_label: str  # "STRONG" / "NORMAL" / "WEAK" / "NONE"
+    strength_label: str
     reasons: dict = field(default_factory=dict)
     entry_price: Optional[float] = None
     atr_value: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
 
 
 def _is_london_or_ny_session(timestamp: pd.Timestamp) -> bool:
@@ -369,11 +369,26 @@ def generate_signal(
 
     reasons = {key: _to_native_type(value) for key, value in reasons.items()}
 
+    # --- SL/TP計算(ATRベース、リスクリワード1:2) ---
+    stop_loss = None
+    take_profit = None
+    entry_price_value = float(latest.get("close")) if pd.notna(latest.get("close")) else None
+
+    if entry_price_value is not None and atr_value is not None and pd.notna(atr_value):
+        if signal_type == "BUY":
+            stop_loss = round(entry_price_value - float(atr_value) * 1.5, 5)
+            take_profit = round(entry_price_value + float(atr_value) * 3.0, 5)
+        elif signal_type == "SELL":
+            stop_loss = round(entry_price_value + float(atr_value) * 1.5, 5)
+            take_profit = round(entry_price_value - float(atr_value) * 3.0, 5)
+
     return SignalResult(
         signal_type=signal_type,
         score=float(score),
         strength_label=strength_label,
         reasons=reasons,
-        entry_price=float(latest.get("close")) if pd.notna(latest.get("close")) else None,
-        atr_value=float(atr_value) if pd.notna(atr_value) else None,
+        entry_price=entry_price_value,
+        atr_value=float(atr_value) if atr_value is not None and pd.notna(atr_value) else None,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
     )

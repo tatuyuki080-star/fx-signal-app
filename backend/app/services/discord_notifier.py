@@ -80,6 +80,12 @@ def _build_embed(symbol: str, result: SignalResult) -> dict:
     if result.entry_price is not None:
         fields.append({"name": "エントリー価格目安", "value": f"{result.entry_price:.5f}", "inline": True})
 
+    if result.stop_loss is not None:
+        fields.append({"name": "🔴 損切りライン(SL)", "value": f"{result.stop_loss:.5f}", "inline": True})
+
+    if result.take_profit is not None:
+        fields.append({"name": "🟢 利確ポイント(TP)", "value": f"{result.take_profit:.5f}", "inline": True})
+
     if result.atr_value is not None:
         fields.append({"name": "ATR", "value": f"{result.atr_value:.5f}", "inline": True})
 

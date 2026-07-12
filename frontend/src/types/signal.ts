@@ -51,6 +51,8 @@ export interface SignalData {
   score: number;
   strength_label: StrengthLabel;
   entry_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
   atr_value: number | null;
   reasons: SignalReasons;
 }

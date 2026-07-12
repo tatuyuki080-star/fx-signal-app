@@ -137,6 +137,26 @@ export default function SignalPanel({ data, isLoading, error }: SignalPanelProps
             <p>{data.entry_price.toFixed(5)}</p>
           </div>
         )}
+        {data.stop_loss !== null && (
+          <div>
+            <p className="text-xs text-[var(--foreground-muted)] mb-1">
+              🔴 損切りライン(SL)
+            </p>
+            <p className="text-[var(--color-sell)] font-semibold">
+              {data.stop_loss?.toFixed(5)}
+            </p>
+          </div>
+        )}
+        {data.take_profit !== null && (
+          <div>
+            <p className="text-xs text-[var(--foreground-muted)] mb-1">
+              🟢 利確ポイント(TP)
+            </p>
+            <p className="text-[var(--color-buy)] font-semibold">
+              {data.take_profit?.toFixed(5)}
+            </p>
+          </div>
+        )}
         {data.atr_value !== null && (
           <div>
             <p className="text-xs text-[var(--foreground-muted)] mb-1">ATR</p>
