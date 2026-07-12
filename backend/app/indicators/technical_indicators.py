@@ -125,23 +125,30 @@ def add_bollinger_bands(
     df = pd.concat([df, bbands_result], axis=1)
     return df
 
+def add_stochastic(
+    df: pd.DataFrame, k_period: int = 5, d_period: int = 3
+) -> pd.DataFrame:
+    """
+    ストキャスティクス(%K, %D)を追加する。
+    5分足用に k_period=5 に設定している。
+    """
+    stoch_result = ta.stoch(df["high"], df["low"], df["close"], k=k_period, d=d_period)
+    df = pd.concat([df, stoch_result], axis=1)
+    return df
+
+
+def add_ema_cross(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    EMA5とEMA13を追加する(5分足用短期EMAクロス)。
+    """
+    df["EMA_5"] = ta.ema(df["close"], length=5)
+    df["EMA_13"] = ta.ema(df["close"], length=13)
+    return df
+
 
 def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     要件で定義されたすべての指標を一括で追加する。
-
-    引数:
-      df: timestamp, open, high, low, close, volume を持つDataFrame
-          (timestamp昇順に並んでいること。services/price_data_service.py の
-           get_recent_price_data() がこの形式で返す)
-
-    戻り値:
-      上記すべての指標列が追加されたDataFrame
-
-    注意:
-      各指標には「計算に必要な最低本数」がある(例: SMA200なら200本以上)。
-      データが足りない期間は NaN(値なし)になる。
-      strategies/ 側で、NaNの場合は判定をスキップする処理が必要。
     """
     df = df.copy()
 
@@ -149,9 +156,11 @@ def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = add_sma(df, 50)
     df = add_sma(df, 200)
     df = add_ema(df, 20)
-    df = add_rsi(df, 14)
+    df = add_ema_cross(df)
+    df = add_rsi(df, 9)
     df = add_macd(df)
     df = add_atr(df, 14)
     df = add_bollinger_bands(df, 20, 2.0)
+    df = add_stochastic(df, 5, 3)
 
     return df

@@ -35,12 +35,14 @@ from app.strategies.trend_analyzer import TrendDirection
 from app.core.symbols_config import get_atr_threshold
 
 
-SCORE_TREND_MATCH = 30
-SCORE_RSI = 15
-SCORE_MACD = 20
+SCORE_TREND_MATCH = 25
+SCORE_RSI = 10
+SCORE_MACD = 15
+SCORE_EMA_CROSS = 20  # 新規追加
+SCORE_STOCHASTIC = 10  # 新規追加
 SCORE_ATR = 10
-SCORE_TIME_OF_DAY = 10
-SCORE_BOLLINGER = 15
+SCORE_TIME_OF_DAY = 5
+SCORE_BOLLINGER = 5
 
 THRESHOLD_STRONG = 85
 THRESHOLD_NORMAL = 70
@@ -153,6 +155,79 @@ def _check_macd_dead_cross(df: pd.DataFrame) -> bool:
     now_below = latest[macd_col] < latest[signal_col]
     return was_above and now_below
 
+def _check_ema_golden_cross(df: pd.DataFrame) -> bool:
+    """
+    EMA5がEMA13を上抜け(ゴールデンクロス)したか判定する。
+    """
+    if "EMA_5" not in df.columns or len(df) < 2:
+        return False
+
+    prev = df.iloc[-2]
+    latest = df.iloc[-1]
+
+    if pd.isna(prev["EMA_5"]) or pd.isna(prev["EMA_13"]):
+        return False
+    if pd.isna(latest["EMA_5"]) or pd.isna(latest["EMA_13"]):
+        return False
+
+    was_below = prev["EMA_5"] <= prev["EMA_13"]
+    now_above = latest["EMA_5"] > latest["EMA_13"]
+    return was_below and now_above
+
+
+def _check_ema_dead_cross(df: pd.DataFrame) -> bool:
+    """
+    EMA5がEMA13を下抜け(デッドクロス)したか判定する。
+    """
+    if "EMA_5" not in df.columns or len(df) < 2:
+        return False
+
+    prev = df.iloc[-2]
+    latest = df.iloc[-1]
+
+    if pd.isna(prev["EMA_5"]) or pd.isna(prev["EMA_13"]):
+        return False
+    if pd.isna(latest["EMA_5"]) or pd.isna(latest["EMA_13"]):
+        return False
+
+    was_above = prev["EMA_5"] >= prev["EMA_13"]
+    now_below = latest["EMA_5"] < latest["EMA_13"]
+    return was_above and now_below
+
+
+def _check_stochastic_buy(df: pd.DataFrame) -> bool:
+    """
+    ストキャスティクス%Kが20以下から反転(上昇)したか判定する。
+    """
+    stoch_col = "STOCHk_5_3_3"
+    if stoch_col not in df.columns or len(df) < 5:
+        return False
+
+    recent = df[stoch_col].tail(5)
+    if recent.isna().any():
+        return False
+
+    latest_k = recent.iloc[-1]
+    min_k = recent.iloc[:-1].min()
+    return min_k <= 20 and latest_k > min_k
+
+
+def _check_stochastic_sell(df: pd.DataFrame) -> bool:
+    """
+    ストキャスティクス%Kが80以上から反転(下降)したか判定する。
+    """
+    stoch_col = "STOCHk_5_3_3"
+    if stoch_col not in df.columns or len(df) < 5:
+        return False
+
+    recent = df[stoch_col].tail(5)
+    if recent.isna().any():
+        return False
+
+    latest_k = recent.iloc[-1]
+    max_k = recent.iloc[:-1].max()
+    return max_k >= 80 and latest_k < max_k
+
 
 def _score_to_label(score: float) -> str:
     """スコアを強度ラベルに変換する。"""
@@ -223,6 +298,24 @@ def generate_signal(
     if macd_ok:
         score += SCORE_MACD
     reasons["macd_cross"] = macd_ok
+
+    # --- EMAクロス(20点) ---
+    if is_buy_direction:
+        ema_ok = _check_ema_golden_cross(df_entry)
+    else:
+        ema_ok = _check_ema_dead_cross(df_entry)
+    if ema_ok:
+        score += SCORE_EMA_CROSS
+    reasons["ema_cross"] = ema_ok
+
+    # --- ストキャスティクス(10点) ---
+    if is_buy_direction:
+        stoch_ok = _check_stochastic_buy(df_entry)
+    else:
+        stoch_ok = _check_stochastic_sell(df_entry)
+    if stoch_ok:
+        score += SCORE_STOCHASTIC
+    reasons["stochastic_reversal"] = stoch_ok
 
     sma50 = latest.get("SMA_50")
     if pd.notna(sma50):
