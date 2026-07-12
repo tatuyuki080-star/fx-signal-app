@@ -12,7 +12,7 @@ services:
     volumes:
       - ./backend:/app
 
-  frontend:
+  ffrontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -20,6 +20,7 @@ services:
     restart: always
     environment:
       - NEXT_PUBLIC_API_URL=http://49.212.186.28:8000
+      - NODE_OPTIONS=--max-old-space-size=512
     ports:
       - "3000:3000"
     depends_on:
@@ -28,6 +29,7 @@ services:
       - ./frontend:/app
       - /app/node_modules
       - /app/.next
+    mem_limit: 600m
 
 volumes:
   postgres_data:
