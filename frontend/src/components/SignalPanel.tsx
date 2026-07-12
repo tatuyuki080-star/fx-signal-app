@@ -12,7 +12,7 @@
 
 "use client";
 
-import { SignalData } from "@/types/signal";
+import { SignalData, AiAnalysis } from "@/types/signal";
 
 interface SignalPanelProps {
   data: SignalData | null;
@@ -168,6 +168,50 @@ export default function SignalPanel({ data, isLoading, error }: SignalPanelProps
       <div>
         <p className="text-xs text-[var(--foreground-muted)] mb-2">
           エントリー理由
+          {/* --- AI分析 --- */}
+      {data.ai_analysis && (
+        <div className="border-t border-[var(--border-color)] pt-4 space-y-3">
+          <p className="text-xs text-[var(--foreground-muted)] font-semibold">
+            🤖 AI分析
+          </p>
+
+          <div>
+            <p className="text-xs text-[var(--foreground-muted)] mb-1">
+              相場状況
+            </p>
+            <p className="text-sm">{data.ai_analysis.summary}</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs text-[var(--foreground-muted)] mb-1">
+                信頼度
+              </p>
+              <p className="text-sm font-semibold">
+                {data.ai_analysis.confidence}
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs text-[var(--foreground-muted)] mb-1">
+              アドバイス
+            </p>
+            <p className="text-sm">{data.ai_analysis.advice}</p>
+          </div>
+
+          {data.ai_analysis.risk_warning && (
+            <div className="rounded-lg bg-[var(--color-sell-bg)] p-3">
+              <p className="text-xs text-[var(--color-sell)] font-semibold mb-1">
+                ⚠️ リスク警告
+              </p>
+              <p className="text-sm text-[var(--color-sell)]">
+                {data.ai_analysis.risk_warning}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
         </p>
         {activeReasons.length > 0 ? (
           <ul className="space-y-1">

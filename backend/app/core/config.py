@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # --- Discord Webhook ---
     DISCORD_WEBHOOK_URL: str
 
+    # --- OpenAI API ---
+    OPENAI_API_KEY: str = ""
+
     # --- 認証 ---
     SECRET_KEY: str
 

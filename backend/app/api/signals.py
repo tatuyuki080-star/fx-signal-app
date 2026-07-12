@@ -19,6 +19,7 @@ signals.py (api/)
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.services.ai_analyzer import analyze_signal_with_ai
 from app.core.database import get_db
 from app.core.symbols_config import SYMBOLS
 from app.services.price_data_service import get_recent_price_data
@@ -53,7 +54,7 @@ def list_symbols():
 
 
 @router.get("/signals/{symbol}")
-def get_latest_signal(symbol: str, db: Session = Depends(get_db)):
+async def get_latest_signal(symbol: str, db: Session = Depends(get_db)):
     """
     指定した銘柄の最新シグナルを計算して返す。
 
@@ -95,6 +96,20 @@ def get_latest_signal(symbol: str, db: Session = Depends(get_db)):
     trend_direction = analyze_higher_timeframe_trend(df_1h_with_indicators)
     result = generate_signal(df_entry_with_indicators, trend_direction, symbol)
 
+    # AI分析を実行(NO_TRADEでも実行するが、BUY/SELLのみ詳細分析)
+    ai_analysis = await analyze_signal_with_ai(
+        symbol=symbol,
+        signal_type=result.signal_type,
+        score=result.score,
+        strength_label=result.strength_label,
+        higher_tf_trend=trend_direction.value,
+        reasons=result.reasons,
+        entry_price=result.entry_price,
+        stop_loss=result.stop_loss,
+        take_profit=result.take_profit,
+        atr_value=result.atr_value,
+    )
+
     return {
         "symbol": symbol,
         "higher_tf_trend": trend_direction.value,
@@ -106,4 +121,5 @@ def get_latest_signal(symbol: str, db: Session = Depends(get_db)):
         "take_profit": result.take_profit,
         "atr_value": result.atr_value,
         "reasons": result.reasons,
+        "ai_analysis": ai_analysis,
     }

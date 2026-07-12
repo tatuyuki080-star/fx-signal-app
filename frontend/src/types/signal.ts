@@ -55,4 +55,13 @@ export interface SignalData {
   take_profit: number | null;
   atr_value: number | null;
   reasons: SignalReasons;
+  ai_analysis: AiAnalysis | null;
+}
+
+/** AI分析結果 */
+export interface AiAnalysis {
+  summary: string;
+  confidence: string;
+  advice: string;
+  risk_warning: string | null;
 }
