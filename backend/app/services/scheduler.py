@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 NOTIFIABLE_LABELS = {"WEAK", "NORMAL", "STRONG"}
-API_REQUEST_INTERVAL_SECONDS = 8
+API_REQUEST_INTERVAL_SECONDS = 12
 
 
 async def _fetch_and_save(symbol: str, timeframe: str) -> None:
