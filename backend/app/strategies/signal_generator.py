@@ -1,355 +1,226 @@
 """
-signal_generator.py
-====================
+smc_signal_generator.py
+========================
 
 このファイルの役割:
-  下位足(エントリー判定用の時間足)の指標データと、上位足トレンド方向を
-  もとに、100点満点のスコアを計算し、BUY/SELL/NO_TRADEを判定する。
-  さらに「なぜそのスコアになったか」という理由を構造化して返す
-  (要件の「エントリー理由の可視化」に対応)。
+  SMC分析の結果をもとに、100点満点のスコアを計算し、
+  BUY/SELL/NO_TRADEを判定する。
 
-スコア配分(合計100点):
-  上位足一致   : 30点
-  RSI         : 15点
-  MACD        : 20点
-  ATR         : 10点
-  時間帯      : 10点
-  ボリンジャー : 15点
-
-スコア → 強度ラベル:
-  85点以上 : STRONG
-  70点以上 : NORMAL
-  50点未満 : NONE (シグナルなし)
-  50〜69点 : WEAK (シグナルは出すが強度は弱い扱い)
-
-使い方(他のファイルから):
-  from app.strategies.signal_generator import generate_signal
-  result = generate_signal(df_entry_tf, trend_direction, symbol)
+スコア配分:
+  市場構造(4時間足)  : 20点
+  市場構造(1時間足)  : 15点
+  BOS/CHOCH(15分足) : 20点
+  Order Block(15分足): 20点
+  需給ゾーン(1時間足) : 15点
+  FVG(5分足)        : 10点
+  合計              : 100点
 """
 
-from dataclasses import dataclass, field
 from typing import Optional
 import pandas as pd
 
-from app.strategies.trend_analyzer import TrendDirection
-from app.core.symbols_config import get_atr_threshold
+from app.indicators.smc_analyzer import analyze_smc
+from app.strategies.signal_generator import SignalResult, _score_to_label
 
 
-SCORE_TREND_MATCH = 25
-SCORE_RSI = 10
-SCORE_MACD = 15
-SCORE_EMA_CROSS = 20  # 新規追加
-SCORE_STOCHASTIC = 10  # 新規追加
-SCORE_ATR = 10
-SCORE_TIME_OF_DAY = 5
-SCORE_BOLLINGER = 5
-
-THRESHOLD_STRONG = 85
-THRESHOLD_NORMAL = 70
-THRESHOLD_WEAK = 60
+# --- スコア配分 ---
+SCORE_STRUCTURE_4H = 20
+SCORE_STRUCTURE_1H = 15
+SCORE_BOS_CHOCH = 20
+SCORE_ORDER_BLOCK = 20
+SCORE_SUPPLY_DEMAND = 15
+SCORE_FVG = 10
 
 
-@dataclass
-class SignalResult:
-    """
-    シグナル判定の結果を表すデータ構造。
-    """
-    signal_type: str
-    score: float
-    strength_label: str
-    reasons: dict = field(default_factory=dict)
-    entry_price: Optional[float] = None
-    atr_value: Optional[float] = None
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
-
-
-def _is_london_or_ny_session(timestamp: pd.Timestamp) -> bool:
-    """
-    ロンドン時間・NY時間(取引が活発な時間帯)かどうかを判定する。
-
-    簡易ルール(UTC基準):
-      ロンドン時間: 8:00 - 17:00 UTC
-      NY時間      : 13:00 - 22:00 UTC
-      → 合わせて 8:00 - 22:00 UTC を「活発な時間帯」とみなす
-
-    注意:
-      これは簡易的な判定。サマータイムの影響で実際の時間帯は前後する。
-      より厳密にするなら、経済指標カレンダーAPIとの連携が望ましいが、
-      現段階ではシンプルな時間帯ルールで代替する。
-    """
+def _get_session(timestamp: pd.Timestamp) -> str:
+    """UTC時刻から取引セッションを判定する。"""
     hour_utc = timestamp.hour
-    return 8 <= hour_utc < 22
+    if 0 <= hour_utc < 7:
+        return "asia"
+    elif 7 <= hour_utc < 16:
+        return "london"
+    else:
+        return "ny"
 
 
-def _check_rsi_reversal_buy(df: pd.DataFrame) -> bool:
-    """
-    RSIが35以下から反転(上昇)したかを判定する。
-    """
-    rsi_col = "RSI_14"
-    if rsi_col not in df.columns or len(df) < 5:
-        return False
-
-    recent_rsi = df[rsi_col].tail(5)
-    if recent_rsi.isna().any():
-        return False
-
-    latest_rsi = recent_rsi.iloc[-1]
-    min_rsi_in_window = recent_rsi.iloc[:-1].min()
-
-    return min_rsi_in_window <= 35 and latest_rsi > min_rsi_in_window
-
-
-def _check_rsi_reversal_sell(df: pd.DataFrame) -> bool:
-    """RSIが65以上から反転(下降)したかを判定する。"""
-    rsi_col = "RSI_14"
-    if rsi_col not in df.columns or len(df) < 5:
-        return False
-
-    recent_rsi = df[rsi_col].tail(5)
-    if recent_rsi.isna().any():
-        return False
-
-    latest_rsi = recent_rsi.iloc[-1]
-    max_rsi_in_window = recent_rsi.iloc[:-1].max()
-
-    return max_rsi_in_window >= 65 and latest_rsi < max_rsi_in_window
-
-
-def _check_macd_golden_cross(df: pd.DataFrame) -> bool:
-    """
-    MACDゴールデンクロス(MACD線がシグナル線を上抜け)を直近で検知したか判定する。
-    """
-    macd_col, signal_col = "MACD_12_26_9", "MACDs_12_26_9"
-    if macd_col not in df.columns or len(df) < 2:
-        return False
-
-    prev = df.iloc[-2]
-    latest = df.iloc[-1]
-
-    if pd.isna(prev[macd_col]) or pd.isna(prev[signal_col]):
-        return False
-    if pd.isna(latest[macd_col]) or pd.isna(latest[signal_col]):
-        return False
-
-    was_below = prev[macd_col] <= prev[signal_col]
-    now_above = latest[macd_col] > latest[signal_col]
-    return was_below and now_above
-
-
-def _check_macd_dead_cross(df: pd.DataFrame) -> bool:
-    """MACDデッドクロス(MACD線がシグナル線を下抜け)を直近で検知したか判定する。"""
-    macd_col, signal_col = "MACD_12_26_9", "MACDs_12_26_9"
-    if macd_col not in df.columns or len(df) < 2:
-        return False
-
-    prev = df.iloc[-2]
-    latest = df.iloc[-1]
-
-    if pd.isna(prev[macd_col]) or pd.isna(prev[signal_col]):
-        return False
-    if pd.isna(latest[macd_col]) or pd.isna(latest[signal_col]):
-        return False
-
-    was_above = prev[macd_col] >= prev[signal_col]
-    now_below = latest[macd_col] < latest[signal_col]
-    return was_above and now_below
-
-def _check_ema_golden_cross(df: pd.DataFrame) -> bool:
-    """
-    EMA5がEMA13を上抜け(ゴールデンクロス)したか判定する。
-    """
-    if "EMA_5" not in df.columns or len(df) < 2:
-        return False
-
-    prev = df.iloc[-2]
-    latest = df.iloc[-1]
-
-    if pd.isna(prev["EMA_5"]) or pd.isna(prev["EMA_13"]):
-        return False
-    if pd.isna(latest["EMA_5"]) or pd.isna(latest["EMA_13"]):
-        return False
-
-    was_below = prev["EMA_5"] <= prev["EMA_13"]
-    now_above = latest["EMA_5"] > latest["EMA_13"]
-    return was_below and now_above
-
-
-def _check_ema_dead_cross(df: pd.DataFrame) -> bool:
-    """
-    EMA5がEMA13を下抜け(デッドクロス)したか判定する。
-    """
-    if "EMA_5" not in df.columns or len(df) < 2:
-        return False
-
-    prev = df.iloc[-2]
-    latest = df.iloc[-1]
-
-    if pd.isna(prev["EMA_5"]) or pd.isna(prev["EMA_13"]):
-        return False
-    if pd.isna(latest["EMA_5"]) or pd.isna(latest["EMA_13"]):
-        return False
-
-    was_above = prev["EMA_5"] >= prev["EMA_13"]
-    now_below = latest["EMA_5"] < latest["EMA_13"]
-    return was_above and now_below
-
-
-def _check_stochastic_buy(df: pd.DataFrame) -> bool:
-    """
-    ストキャスティクス%Kが20以下から反転(上昇)したか判定する。
-    """
-    stoch_col = "STOCHk_5_3_3"
-    if stoch_col not in df.columns or len(df) < 5:
-        return False
-
-    recent = df[stoch_col].tail(5)
-    if recent.isna().any():
-        return False
-
-    latest_k = recent.iloc[-1]
-    min_k = recent.iloc[:-1].min()
-    return min_k <= 20 and latest_k > min_k
-
-
-def _check_stochastic_sell(df: pd.DataFrame) -> bool:
-    """
-    ストキャスティクス%Kが80以上から反転(下降)したか判定する。
-    """
-    stoch_col = "STOCHk_5_3_3"
-    if stoch_col not in df.columns or len(df) < 5:
-        return False
-
-    recent = df[stoch_col].tail(5)
-    if recent.isna().any():
-        return False
-
-    latest_k = recent.iloc[-1]
-    max_k = recent.iloc[:-1].max()
-    return max_k >= 80 and latest_k < max_k
-
-
-def _score_to_label(score: float) -> str:
-    """スコアを強度ラベルに変換する。"""
-    if score >= THRESHOLD_STRONG:
-        return "STRONG"
-    if score >= THRESHOLD_NORMAL:
-        return "NORMAL"
-    if score >= THRESHOLD_WEAK:
-        return "WEAK"
-    return "NONE"
-
-
-def generate_signal(
-    df_entry: pd.DataFrame,
-    trend_direction: TrendDirection,
-    symbol: str,
+def generate_smc_signal(
+    df_4h: pd.DataFrame,
+    df_1h: pd.DataFrame,
+    df_15m: pd.DataFrame,
+    df_5m: pd.DataFrame,
+    symbol: str = "XAUUSD",
 ) -> SignalResult:
     """
-    下位足の指標データと上位足トレンド方向から、シグナルを生成する。
+    SMCベースのシグナルを生成する(4時間足対応版)。
 
     引数:
-      df_entry       : indicators.add_all_indicators() 適用済みの
-                        エントリー判定用時間足(例: 5分足)のDataFrame
-      trend_direction: trend_analyzer.analyze_higher_timeframe_trend() の結果
-      symbol         : "USDJPY" などアプリ内表記(ATR閾値の取得に使う)
+      df_4h  : 4時間足のOHLCデータ(大きなトレンド判定用)
+      df_1h  : 1時間足のOHLCデータ(中期トレンド判定用)
+      df_15m : 15分足のOHLCデータ(BOS/CHOCH・OB判定用)
+      df_5m  : 5分足のOHLCデータ(FVG・エントリータイミング用)
+      symbol : 銘柄名
 
     戻り値:
-      SignalResult (signal_type, score, strength_label, reasonsを含む)
+      SignalResult
     """
-    reasons: dict = {}
-
-    if df_entry.empty or len(df_entry) < 5:
-        return SignalResult(
-            signal_type="NO_TRADE",
-            score=0,
-            strength_label="NONE",
-            reasons={"data_insufficient": "価格データが不足しています"},
-        )
-
-    latest = df_entry.iloc[-1]
-
-    if trend_direction == TrendDirection.NEUTRAL:
-        return SignalResult(
-            signal_type="NO_TRADE",
-            score=0,
-            strength_label="NONE",
-            reasons={"higher_tf_trend": "上位足トレンドが不明瞭なため見送り"},
-        )
-
-    is_buy_direction = trend_direction == TrendDirection.UPTREND
+    reasons = {}
     score = 0.0
 
-    score += SCORE_TREND_MATCH
-    reasons["higher_tf_trend"] = True
+    # データ不足チェック
+    for tf, df in [("4時間足", df_4h), ("1時間足", df_1h),
+                   ("15分足", df_15m), ("5分足", df_5m)]:
+        if df is None or df.empty or len(df) < 25:
+            return SignalResult(
+                signal_type="NO_TRADE",
+                score=0,
+                strength_label="NONE",
+                reasons={"error": f"{tf}データ不足"},
+            )
 
-    if is_buy_direction:
-        rsi_ok = _check_rsi_reversal_buy(df_entry)
-    else:
-        rsi_ok = _check_rsi_reversal_sell(df_entry)
-    if rsi_ok:
-        score += SCORE_RSI
-    reasons["rsi_reversal"] = rsi_ok
+    # SMC分析を実行
+    smc_4h = analyze_smc(df_4h, swing_length=10)
+    smc_1h = analyze_smc(df_1h, swing_length=10)
+    smc_15m = analyze_smc(df_15m, swing_length=10)
+    smc_5m = analyze_smc(df_5m, swing_length=10)
 
-    if is_buy_direction:
-        macd_ok = _check_macd_golden_cross(df_entry)
-    else:
-        macd_ok = _check_macd_dead_cross(df_entry)
-    if macd_ok:
-        score += SCORE_MACD
-    reasons["macd_cross"] = macd_ok
+    latest_5m = df_5m.iloc[-1]
+    current_price = float(latest_5m["close"])
+    timestamp = latest_5m["timestamp"]
+    session = _get_session(timestamp)
 
-    # --- EMAクロス(20点) ---
-    if is_buy_direction:
-        ema_ok = _check_ema_golden_cross(df_entry)
-    else:
-        ema_ok = _check_ema_dead_cross(df_entry)
-    if ema_ok:
-        score += SCORE_EMA_CROSS
-    reasons["ema_cross"] = ema_ok
+    ms_4h = smc_4h.market_structure
+    ms_1h = smc_1h.market_structure
+    ms_15m = smc_15m.market_structure
 
-    # --- ストキャスティクス(10点) ---
-    if is_buy_direction:
-        stoch_ok = _check_stochastic_buy(df_entry)
-    else:
-        stoch_ok = _check_stochastic_sell(df_entry)
-    if stoch_ok:
-        score += SCORE_STOCHASTIC
-    reasons["stochastic_reversal"] = stoch_ok
-
-    sma50 = latest.get("SMA_50")
-    if pd.notna(sma50):
-        price_position_ok = (
-            latest["close"] > sma50 if is_buy_direction else latest["close"] < sma50
+    # 4時間足のトレンドが不明な場合はNO_TRADE
+    if ms_4h.trend == "neutral":
+        return SignalResult(
+            signal_type="NO_TRADE",
+            score=0,
+            strength_label="NONE",
+            reasons={"market_structure_4h": "4時間足トレンドが中立のため見送り"},
         )
+
+    is_buy_direction = ms_4h.trend == "bullish"
+
+    # --- 1. 市場構造(4時間足) 20点 ---
+    if ms_4h.trend == "bullish":
+        score += SCORE_STRUCTURE_4H
+        reasons["market_structure_4h"] = "上昇構造(HH/HL) [4H]"
+    elif ms_4h.trend == "bearish":
+        score += SCORE_STRUCTURE_4H
+        reasons["market_structure_4h"] = "下降構造(LH/LL) [4H]"
+
+    # --- 2. 市場構造(1時間足) 15点 ---
+    if ms_1h.trend == ms_4h.trend:
+        score += SCORE_STRUCTURE_1H
+        reasons["market_structure_1h"] = f"1時間足トレンド一致({ms_1h.trend})"
     else:
-        price_position_ok = False
-    reasons["price_vs_sma50"] = price_position_ok
+        reasons["market_structure_1h"] = False
 
-    atr_value = latest.get("ATR_14")
-    atr_threshold = get_atr_threshold(symbol)
-    atr_ok = pd.notna(atr_value) and atr_value >= atr_threshold
-    if atr_ok:
-        score += SCORE_ATR
-    reasons["atr_sufficient"] = atr_ok
-
-    timestamp = latest.get("timestamp")
-    time_ok = _is_london_or_ny_session(timestamp) if timestamp is not None else False
-    if time_ok:
-        score += SCORE_TIME_OF_DAY
-    reasons["active_session"] = time_ok
-
-    bbp = latest.get("BBP_20_2.0")
-    if pd.notna(bbp):
-        if is_buy_direction:
-            bollinger_ok = bbp <= 0.3
+    # --- 3. BOS/CHOCH(15分足) 20点 ---
+    if is_buy_direction:
+        if ms_15m.bos_detected and ms_15m.bos_direction == "bullish":
+            score += SCORE_BOS_CHOCH
+            reasons["bos_choch"] = "Bullish BOS確認 [15M]"
+        elif ms_15m.choch_detected and ms_15m.choch_direction == "bullish":
+            score += SCORE_BOS_CHOCH
+            reasons["bos_choch"] = "Bullish CHOCH [15M]"
         else:
-            bollinger_ok = bbp >= 0.7
+            reasons["bos_choch"] = False
     else:
-        bollinger_ok = False
-    if bollinger_ok:
-        score += SCORE_BOLLINGER
-    reasons["bollinger_position"] = bollinger_ok
+        if ms_15m.bos_detected and ms_15m.bos_direction == "bearish":
+            score += SCORE_BOS_CHOCH
+            reasons["bos_choch"] = "Bearish BOS確認 [15M]"
+        elif ms_15m.choch_detected and ms_15m.choch_direction == "bearish":
+            score += SCORE_BOS_CHOCH
+            reasons["bos_choch"] = "Bearish CHOCH [15M]"
+        else:
+            reasons["bos_choch"] = False
+
+    # --- 4. Order Block(15分足) 20点 ---
+    active_obs = [ob for ob in smc_15m.order_blocks if ob.is_active]
+    if is_buy_direction:
+        bullish_obs = [ob for ob in active_obs if ob.ob_type == "bullish"]
+        if bullish_obs:
+            score += SCORE_ORDER_BLOCK
+            reasons["order_block"] = (
+                f"Bullish OB接触 "
+                f"({bullish_obs[-1].bottom:.2f}〜{bullish_obs[-1].top:.2f}) [15M]"
+            )
+        else:
+            reasons["order_block"] = False
+    else:
+        bearish_obs = [ob for ob in active_obs if ob.ob_type == "bearish"]
+        if bearish_obs:
+            score += SCORE_ORDER_BLOCK
+            reasons["order_block"] = (
+                f"Bearish OB接触 "
+                f"({bearish_obs[-1].bottom:.2f}〜{bearish_obs[-1].top:.2f}) [15M]"
+            )
+        else:
+            reasons["order_block"] = False
+
+    # --- 5. 需給ゾーン(1時間足) 15点 ---
+    active_zones = [z for z in smc_1h.supply_demand_zones if z.is_active]
+    if is_buy_direction:
+        demand_zones = [z for z in active_zones if z.zone_type == "demand"]
+        if demand_zones:
+            score += SCORE_SUPPLY_DEMAND
+            reasons["supply_demand"] = (
+                f"Demandゾーン内 "
+                f"({demand_zones[-1].bottom:.2f}〜{demand_zones[-1].top:.2f}) [1H]"
+            )
+        else:
+            reasons["supply_demand"] = False
+    else:
+        supply_zones = [z for z in active_zones if z.zone_type == "supply"]
+        if supply_zones:
+            score += SCORE_SUPPLY_DEMAND
+            reasons["supply_demand"] = (
+                f"Supplyゾーン内 "
+                f"({supply_zones[-1].bottom:.2f}〜{supply_zones[-1].top:.2f}) [1H]"
+            )
+        else:
+            reasons["supply_demand"] = False
+
+    # --- 6. FVG(5分足) 10点 ---
+    unfilled_fvgs = [f for f in smc_5m.fair_value_gaps if not f.is_filled]
+    if is_buy_direction:
+        bullish_fvgs = [f for f in unfilled_fvgs if f.fvg_type == "bullish"]
+        if bullish_fvgs:
+            score += SCORE_FVG
+            reasons["fvg"] = "Bullish FVG存在 [5M]"
+        else:
+            reasons["fvg"] = False
+    else:
+        bearish_fvgs = [f for f in unfilled_fvgs if f.fvg_type == "bearish"]
+        if bearish_fvgs:
+            score += SCORE_FVG
+            reasons["fvg"] = "Bearish FVG存在 [5M]"
+        else:
+            reasons["fvg"] = False
+
+    # セッション情報を記録(スコアには含めない)
+    reasons["session"] = f"{session.upper()}セッション"
+
+    # --- ATR計算(SL/TP用) ---
+    atr_value = None
+    if "ATR_14" in df_5m.columns:
+        atr_raw = df_5m["ATR_14"].iloc[-1]
+        if pd.notna(atr_raw):
+            atr_value = float(atr_raw)
+
+    # --- SL/TP計算 ---
+    stop_loss = None
+    take_profit = None
+    if atr_value is not None:
+        if is_buy_direction:
+            stop_loss = round(current_price - atr_value * 1.5, 2)
+            take_profit = round(current_price + atr_value * 3.0, 2)
+        else:
+            stop_loss = round(current_price + atr_value * 1.5, 2)
+            take_profit = round(current_price - atr_value * 3.0, 2)
 
     # --- 最終判定 ---
     strength_label = _score_to_label(score)
@@ -358,37 +229,20 @@ def generate_signal(
     else:
         signal_type = "BUY" if is_buy_direction else "SELL"
 
-    # numpy.bool_ などのnumpyスカラー型が混ざっていると、FastAPIのJSON変換で
-    # ValueError("'numpy.bool' object is not iterable") のようなエラーになる。
-    # numpyのスカラー型は .item() でPython標準の型に変換できるので、
-    # それを使って reasons の値をすべて安全な型に変換しておく。
-    def _to_native_type(value):
-        if hasattr(value, "item"):  # numpy.bool_, numpy.float64 など
+    def _to_native(value):
+        if hasattr(value, "item"):
             return value.item()
         return value
 
-    reasons = {key: _to_native_type(value) for key, value in reasons.items()}
-
-    # --- SL/TP計算(ATRベース、リスクリワード1:2) ---
-    stop_loss = None
-    take_profit = None
-    entry_price_value = float(latest.get("close")) if pd.notna(latest.get("close")) else None
-
-    if entry_price_value is not None and atr_value is not None and pd.notna(atr_value):
-        if signal_type == "BUY":
-            stop_loss = round(entry_price_value - float(atr_value) * 1.5, 5)
-            take_profit = round(entry_price_value + float(atr_value) * 3.0, 5)
-        elif signal_type == "SELL":
-            stop_loss = round(entry_price_value + float(atr_value) * 1.5, 5)
-            take_profit = round(entry_price_value - float(atr_value) * 3.0, 5)
+    reasons = {k: _to_native(v) for k, v in reasons.items()}
 
     return SignalResult(
         signal_type=signal_type,
         score=float(score),
         strength_label=strength_label,
         reasons=reasons,
-        entry_price=entry_price_value,
-        atr_value=float(atr_value) if atr_value is not None and pd.notna(atr_value) else None,
+        entry_price=current_price,
+        atr_value=atr_value,
         stop_loss=stop_loss,
         take_profit=take_profit,
     )
