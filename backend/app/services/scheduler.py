@@ -56,9 +56,16 @@ async def check_signal_for_symbol_with_result(symbol: str) -> dict:
     4時間足・1時間足・15分足・5分足・1分足の5層構造で判定する。
     """
     try:
-        # --- 1. データ取得・保存(5時間足対応) ---
-        await _fetch_and_save(symbol, "4h")
-        await asyncio.sleep(API_REQUEST_INTERVAL_SECONDS)
+       # --- 1. データ取得・保存 ---
+        # 4時間足は更新頻度が低いため、4時間に1回だけ取得する
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+        should_fetch_4h = (now_utc.minute == 0 and now_utc.hour % 4 == 0)
+
+        if should_fetch_4h:
+            await _fetch_and_save(symbol, "4h")
+            await asyncio.sleep(API_REQUEST_INTERVAL_SECONDS)
+
         await _fetch_and_save(symbol, "1h")
         await asyncio.sleep(API_REQUEST_INTERVAL_SECONDS)
         await _fetch_and_save(symbol, "15m")
