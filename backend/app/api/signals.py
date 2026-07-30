@@ -4,45 +4,26 @@ signals.py (api/)
 
 このファイルの役割:
   フロントエンドから呼ばれる、シグナル関連の正式なAPIエンドポイント。
-
-なぜ main.py から分離する?:
-  main.py に全エンドポイントを書き続けると、機能が増えるたびに
-  ファイルが肥大化し、見通しが悪くなる。FastAPIの「APIRouter」を使うと、
-  関連するエンドポイントをファイル単位でまとめ、main.py 側では
-  「読み込んで登録する」だけで済むようになる。
-
-このファイルが提供するエンドポイント:
-  GET /api/symbols              : 対応銘柄の一覧を返す
-  GET /api/signals/{symbol}     : 指定銘柄の最新シグナルを返す
+  SMCベースのシグナルロジックを使用する。
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.services.ai_analyzer import analyze_signal_with_ai
 from app.core.database import get_db
 from app.core.symbols_config import SYMBOLS
 from app.services.price_data_service import get_recent_price_data
 from app.indicators.technical_indicators import add_all_indicators
-from app.strategies.trend_analyzer import analyze_higher_timeframe_trend
-from app.strategies.signal_generator import generate_signal
+from app.indicators.smc_analyzer import analyze_smc
+from app.strategies.smc_signal_generator import generate_smc_signal
+from app.services.ai_analyzer import analyze_signal_with_ai
 
 router = APIRouter(prefix="/api", tags=["signals"])
 
 
 @router.get("/symbols")
 def list_symbols():
-    """
-    対応している銘柄の一覧を返す。
-
-    フロントエンドの銘柄選択タブなどで使う。
-
-    戻り値の例:
-      [
-        {"symbol": "USDJPY", "display_name": "USD/JPY", "category": "forex"},
-        ...
-      ]
-    """
+    """対応している銘柄の一覧を返す。"""
     return [
         {
             "symbol": symbol,
@@ -56,53 +37,37 @@ def list_symbols():
 @router.get("/signals/{symbol}")
 async def get_latest_signal(symbol: str, db: Session = Depends(get_db)):
     """
-    指定した銘柄の最新シグナルを計算して返す。
-
-    引数:
-      symbol: アプリ内表記。例: "USDJPY"(URLパスの一部として渡される)
-
-    戻り値の例:
-      {
-        "symbol": "USDJPY",
-        "higher_tf_trend": "UPTREND",
-        "signal_type": "NO_TRADE",
-        "score": 40.0,
-        "strength_label": "NONE",
-        "entry_price": 162.43,
-        "atr_value": 0.042,
-        "reasons": {...}
-      }
-
-    注意:
-      ここではDBにすでに保存されている直近データから計算する。
-      最新のAPIデータを取得し直すわけではない
-      (それはバックグラウンドのスケジューラが担当する役割)。
+    指定した銘柄の最新SMCシグナルを計算して返す。
     """
     if symbol not in SYMBOLS:
-        raise HTTPException(status_code=404, detail=f"未対応の銘柄です: {symbol}")
-
-    df_1h = get_recent_price_data(db, symbol, "1h", limit=300)
-    df_entry = get_recent_price_data(db, symbol, "5m", limit=300)
-
-    if df_1h.empty or df_entry.empty:
         raise HTTPException(
-            status_code=404,
-            detail=f"{symbol} のデータがまだありません。スケジューラの初回実行をお待ちください。",
+            status_code=404, detail=f"未対応の銘柄です: {symbol}"
         )
 
-    df_1h_with_indicators = add_all_indicators(df_1h)
-    df_entry_with_indicators = add_all_indicators(df_entry)
+    # 1時間足データ取得(市場構造判定用)
+    df_1h = get_recent_price_data(db, symbol, "1h", limit=300)
+    # 5分足データ取得(エントリー判定用)
+    df_5m = get_recent_price_data(db, symbol, "5m", limit=300)
 
-    trend_direction = analyze_higher_timeframe_trend(df_1h_with_indicators)
-    result = generate_signal(df_entry_with_indicators, trend_direction, symbol)
+    if df_1h.empty or df_5m.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{symbol} のデータがまだありません。",
+        )
 
-    # AI分析を実行(NO_TRADEでも実行するが、BUY/SELLのみ詳細分析)
+    # ATR計算のために指標を追加
+    df_5m = add_all_indicators(df_5m)
+
+    # SMCシグナル生成
+    result = generate_smc_signal(df_1h, df_5m, symbol)
+
+    # AI分析
     ai_analysis = await analyze_signal_with_ai(
         symbol=symbol,
         signal_type=result.signal_type,
         score=result.score,
         strength_label=result.strength_label,
-        higher_tf_trend=trend_direction.value,
+        higher_tf_trend=result.reasons.get("market_structure", ""),
         reasons=result.reasons,
         entry_price=result.entry_price,
         stop_loss=result.stop_loss,
@@ -112,7 +77,6 @@ async def get_latest_signal(symbol: str, db: Session = Depends(get_db)):
 
     return {
         "symbol": symbol,
-        "higher_tf_trend": trend_direction.value,
         "signal_type": result.signal_type,
         "score": result.score,
         "strength_label": result.strength_label,
