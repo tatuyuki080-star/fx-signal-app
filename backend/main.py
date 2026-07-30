@@ -30,8 +30,6 @@ from app.core.symbols_config import get_twelve_data_symbol
 from app.services.twelve_data_client import fetch_time_series, TwelveDataError
 from app.services.price_data_service import save_price_data, get_recent_price_data
 from app.indicators.technical_indicators import add_all_indicators
-from app.strategies.trend_analyzer import analyze_higher_timeframe_trend
-from app.strategies.signal_generator import generate_signal
 from app.services.discord_notifier import send_signal_notification
 from app.services.scheduler import start_scheduler
 from app.api.signals import router as signals_router
@@ -231,8 +229,9 @@ def debug_signal(
         }
     df_entry_with_indicators = add_all_indicators(df_entry)
 
-    result = generate_signal(df_entry_with_indicators, trend_direction, symbol)
-
+    from app.strategies.smc_signal_generator import generate_smc_signal
+    result = generate_smc_signal(df_entry_with_indicators, df_entry_with_indicators, df_entry_with_indicators, df_entry_with_indicators, symbol)
+    
     return {
         "symbol": symbol,
         "entry_timeframe": entry_timeframe,
@@ -273,7 +272,8 @@ async def debug_signal_and_notify(
         return {"status": "error", "message": f"{entry_timeframe}のデータがありません。"}
     df_entry_with_indicators = add_all_indicators(df_entry)
 
-    result = generate_signal(df_entry_with_indicators, trend_direction, symbol)
+    from app.strategies.smc_signal_generator import generate_smc_signal
+    result = generate_smc_signal(df_entry_with_indicators, df_entry_with_indicators, df_entry_with_indicators, df_entry_with_indicators, symbol)
 
     notified = await send_signal_notification(symbol, result)
 
