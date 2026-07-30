@@ -17,11 +17,36 @@ smc_signal_generator.py
   合計              : 100点
 """
 
+from dataclasses import dataclass, field
 from typing import Optional
 import pandas as pd
 
 from app.indicators.smc_analyzer import analyze_smc
-from app.strategies.signal_generator import SignalResult, _score_to_label
+
+
+# --- SignalResultをここで定義(循環インポート回避) ---
+@dataclass
+class SignalResult:
+    """シグナル判定の結果を表すデータ構造。"""
+    signal_type: str
+    score: float
+    strength_label: str
+    reasons: dict = field(default_factory=dict)
+    entry_price: Optional[float] = None
+    atr_value: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+
+
+def _score_to_label(score: float) -> str:
+    """スコアを強度ラベルに変換する。"""
+    if score >= 85:
+        return "STRONG"
+    if score >= 70:
+        return "NORMAL"
+    if score >= 60:
+        return "WEAK"
+    return "NONE"
 
 
 # --- スコア配分 ---
@@ -55,14 +80,6 @@ def generate_smc_signal(
 ) -> SignalResult:
     """
     SMCベースのシグナルを生成する(5時間足対応版)。
-
-    引数:
-      df_4h  : 4時間足(大きなトレンド判定用)
-      df_1h  : 1時間足(中期トレンド・需給ゾーン判定用)
-      df_15m : 15分足(BOS/CHOCH・OB判定用)
-      df_5m  : 5分足(FVG判定用)
-      df_1m  : 1分足(エントリータイミング精密化用、省略可)
-      symbol : 銘柄名
     """
     reasons = {}
     score = 0.0
@@ -206,7 +223,6 @@ def generate_smc_signal(
     if df_1m is not None and not df_1m.empty and len(df_1m) >= 25:
         smc_1m = analyze_smc(df_1m, swing_length=5)
         ms_1m = smc_1m.market_structure
-
         entry_confirmed = False
         if is_buy_direction:
             if (ms_1m.bos_detected and ms_1m.bos_direction == "bullish") or \
