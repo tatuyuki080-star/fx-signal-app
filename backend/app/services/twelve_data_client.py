@@ -37,9 +37,9 @@ TIMEFRAME_MAP = {
 }
 
 # 429 (Too Many Requests) が出た場合に何秒待ってリトライするか
-RATE_LIMIT_RETRY_WAIT_SECONDS = 15
+RATE_LIMIT_RETRY_WAIT_SECONDS = 20
 # 429リトライの最大回数(これを超えたら諦めてエラーにする)
-MAX_RATE_LIMIT_RETRIES = 2
+MAX_RATE_LIMIT_RETRIES = 1
 
 
 class TwelveDataError(Exception):
