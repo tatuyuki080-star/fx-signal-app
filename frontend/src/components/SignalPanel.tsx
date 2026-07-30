@@ -21,6 +21,14 @@ interface SignalPanelProps {
 }
 
 const REASON_LABELS: Record<string, string> = {
+  // SMCベースの理由
+  market_structure: "市場構造",
+  bos_choch: "BOS/CHOCH",
+  order_block: "オーダーブロック",
+  supply_demand: "需給ゾーン",
+  fvg: "フェアバリューギャップ(FVG)",
+  session: "取引セッション",
+  // 旧ロジック(後方互換性のため残す)
   higher_tf_trend: "上位足トレンド一致",
   rsi_reversal: "RSI反転",
   macd_cross: "MACDクロス",
@@ -96,8 +104,15 @@ export default function SignalPanel({ data, isLoading, error }: SignalPanelProps
   const signalStyle = getSignalTypeStyle(data.signal_type);
 
   const activeReasons = Object.entries(data.reasons)
-    .filter(([, value]) => value === true)
-    .map(([key]) => REASON_LABELS[key] || key);
+    .filter(([, value]) => value !== false && value !== null && value !== undefined)
+    .map(([key, value]) => {
+      const label = REASON_LABELS[key] || key;
+      // 文字列の場合はその内容も表示(例: "Bullish BOS確認")
+      if (typeof value === "string" && value !== "true") {
+        return `${label}: ${value}`;
+      }
+      return label;
+    });
 
   return (
     <div className="rounded-xl border border-[var(--border-color)] bg-[var(--background-panel)] p-6 space-y-5">
